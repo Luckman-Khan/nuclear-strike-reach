@@ -73,6 +73,163 @@ export const buildRangePolygon = (
   return points
 }
 
+const unwrapLongitudes = (points: Coordinate[]) => {
+  if (points.length === 0) {
+    return []
+  }
+
+  const unwrapped: Coordinate[] = [{ ...points[0] }]
+
+  for (let index = 1; index < points.length; index += 1) {
+    const current = { ...points[index] }
+    const previous = unwrapped[index - 1]
+    let adjustedLon = current.lon
+
+    while (adjustedLon - previous.lon > 180) {
+      adjustedLon -= 360
+    }
+
+    while (adjustedLon - previous.lon < -180) {
+      adjustedLon += 360
+    }
+
+    unwrapped.push({
+      lat: current.lat,
+      lon: adjustedLon,
+    })
+  }
+
+  return unwrapped
+}
+
+const dedupeClosingPoint = (points: Coordinate[]) => {
+  if (points.length < 2) {
+    return points
+  }
+
+  const first = points[0]
+  const last = points[points.length - 1]
+
+  if (first.lat === last.lat && first.lon === last.lon) {
+    return points.slice(0, -1)
+  }
+
+  return points
+}
+
+const intersectAtLongitude = (
+  start: Coordinate,
+  end: Coordinate,
+  longitude: number,
+): Coordinate => {
+  const deltaLon = end.lon - start.lon
+
+  if (deltaLon === 0) {
+    return {
+      lat: start.lat,
+      lon: longitude,
+    }
+  }
+
+  const ratio = (longitude - start.lon) / deltaLon
+
+  return {
+    lat: start.lat + (end.lat - start.lat) * ratio,
+    lon: longitude,
+  }
+}
+
+const clipPolygonAgainstLongitude = (
+  points: Coordinate[],
+  longitude: number,
+  keepGreaterThan: boolean,
+) => {
+  if (points.length === 0) {
+    return []
+  }
+
+  const clipped: Coordinate[] = []
+
+  for (let index = 0; index < points.length; index += 1) {
+    const start = points[index]
+    const end = points[(index + 1) % points.length]
+    const startInside = keepGreaterThan ? start.lon >= longitude : start.lon <= longitude
+    const endInside = keepGreaterThan ? end.lon >= longitude : end.lon <= longitude
+
+    if (startInside && endInside) {
+      clipped.push(end)
+      continue
+    }
+
+    if (startInside && !endInside) {
+      clipped.push(intersectAtLongitude(start, end, longitude))
+      continue
+    }
+
+    if (!startInside && endInside) {
+      clipped.push(intersectAtLongitude(start, end, longitude))
+      clipped.push(end)
+    }
+  }
+
+  return clipped
+}
+
+const clipPolygonToLongitudeBand = (
+  points: Coordinate[],
+  minLongitude: number,
+  maxLongitude: number,
+) => {
+  const withoutClosingPoint = dedupeClosingPoint(points)
+  const leftClipped = clipPolygonAgainstLongitude(withoutClosingPoint, minLongitude, true)
+  const fullyClipped = clipPolygonAgainstLongitude(leftClipped, maxLongitude, false)
+
+  if (fullyClipped.length < 3) {
+    return []
+  }
+
+  return [...fullyClipped, fullyClipped[0]]
+}
+
+export const buildRangePolygons = (
+  center: Coordinate,
+  rangeKm: number,
+  segments = 240,
+) => {
+  const ring = buildRangePolygon(center, rangeKm, segments)
+  const unwrapped = unwrapLongitudes(ring)
+
+  if (unwrapped.length === 0) {
+    return []
+  }
+
+  const longitudes = unwrapped.map((point) => point.lon)
+  const minLongitude = Math.min(...longitudes)
+  const maxLongitude = Math.max(...longitudes)
+  const startWindow = Math.floor((minLongitude + 180) / 360)
+  const endWindow = Math.floor((maxLongitude + 180) / 360)
+  const polygons: Coordinate[][] = []
+
+  for (let windowIndex = startWindow; windowIndex <= endWindow; windowIndex += 1) {
+    const windowMin = -180 + windowIndex * 360
+    const windowMax = 180 + windowIndex * 360
+    const clipped = clipPolygonToLongitudeBand(unwrapped, windowMin, windowMax)
+
+    if (clipped.length < 4) {
+      continue
+    }
+
+    polygons.push(
+      clipped.map((point) => ({
+        lat: point.lat,
+        lon: normalizeLongitude(point.lon),
+      })),
+    )
+  }
+
+  return polygons
+}
+
 export const buildGreatCircleArc = (
   from: Coordinate,
   to: Coordinate,

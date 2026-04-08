@@ -2,6 +2,7 @@ import { startTransition, useDeferredValue, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   CircleMarker,
+  GeoJSON,
   MapContainer,
   Polygon,
   Polyline,
@@ -19,7 +20,9 @@ import {
   type Coordinate,
   type LaunchNation,
 } from './data'
-import { buildGreatCircleArc, buildRangePolygon, haversineDistanceKm, roundKm } from './geo'
+import { buildGreatCircleArc, haversineDistanceKm, roundKm } from './geo'
+import worldGeoJson from 'geojson-world-map/lib/world.js'
+import type { Feature, FeatureCollection, GeoJsonObject, Geometry } from 'geojson'
 
 type ActiveView = 'city' | 'offensive' | 'defensive'
 
@@ -39,6 +42,64 @@ type ReachResult = {
 
 const numberFormatter = new Intl.NumberFormat('en-US')
 const defaultCenter: [number, number] = [22, 14]
+const alphabetizedCapitals = [...MAJOR_CAPITALS].sort((left, right) =>
+  left.country.localeCompare(right.country) || left.capital.localeCompare(right.capital),
+)
+const countryShapes = worldGeoJson as FeatureCollection<Geometry>
+const jammuAndKashmirOverlay: [number, number][] = [
+  [34.9, 73.6],
+  [35.6, 74.9],
+  [35.9, 76.0],
+  [35.8, 77.4],
+  [34.8, 78.5],
+  [33.7, 78.1],
+  [33.0, 77.0],
+  [33.2, 75.7],
+  [34.1, 74.4],
+  [34.9, 73.6],
+]
+
+const normalizeCountryName = (country: string) =>
+  country
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\./g, '')
+    .replace(/,/g, '')
+    .replace(/'/g, '')
+    .replace(/&/g, 'and')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const countryNameAliases = new Map<string, string>([
+  ['usa', 'united states'],
+  ['united states of america', 'united states'],
+  ['uk', 'united kingdom'],
+  ['great britain', 'united kingdom'],
+  ['north korea', 'korea'],
+  ['south korea', 'korea'],
+  ['south sudan', 's sudan'],
+  ['bosnia and herzegovina', 'bosnia and herzeg'],
+  ['czechia', 'czech rep'],
+  ['dr congo', 'dem rep congo'],
+  ['democratic republic of the congo', 'dem rep congo'],
+  ['republic of the congo', 'congo'],
+  ['central african republic', 'central african rep'],
+  ['dominican republic', 'dominican rep'],
+  ['equatorial guinea', 'eq guinea'],
+  ['eswatini', 'swaziland'],
+  ['ivory coast', 'cote divoire'],
+  ['north macedonia', 'macedonia'],
+  ['laos', 'lao pdr'],
+  ['east timor', 'timor-leste'],
+  ['antigua and barbuda', 'antigua and barb'],
+  ['western sahara', 'w sahara'],
+  ['jammu and kashmir', 'india'],
+  ['jammu & kashmir', 'india'],
+])
+
+const normalizeCountryLookup = (country: string) =>
+  countryNameAliases.get(normalizeCountryName(country)) ?? normalizeCountryName(country)
 
 const buildSearchUrl = (term: string, limit: number) => {
   const params = new URLSearchParams({
@@ -111,7 +172,12 @@ const getReachableNations = (target: Coordinate, excludedCountry?: string) =>
       spareRangeKm,
     }
   })
-    .filter((item) => item.spareRangeKm >= 0 && item.nation.country !== excludedCountry)
+    .filter(
+      (item) =>
+        item.spareRangeKm >= 0 &&
+        (!excludedCountry ||
+          normalizeCountryLookup(item.nation.country) !== normalizeCountryLookup(excludedCountry)),
+    )
     .sort((left, right) => right.spareRangeKm - left.spareRangeKm)
 
 const getOffensiveReachList = (selectedNation: LaunchNation) =>
@@ -165,9 +231,9 @@ const ViewportController = ({
     }
 
     if (view === 'offensive') {
-      const polygon = buildRangePolygon(offensiveNation.coords, offensiveNation.rangeKm)
       const bounds = L.latLngBounds(
-        polygon.map((point) => [point.lat, point.lon] as [number, number]),
+        [offensiveNation.coords.lat, offensiveNation.coords.lon],
+        [offensiveNation.coords.lat, offensiveNation.coords.lon],
       )
 
       offensiveCapitals.forEach((item) => {
@@ -250,8 +316,10 @@ function App() {
   const cityReachability = selectedCity ? getReachableNations(selectedCity.coords) : []
   const offensiveReachability = getOffensiveReachList(selectedNation)
   const defensiveReachability = getReachableNations(defensiveTarget.coords, defensiveTarget.country)
-  const offensivePolygon = buildRangePolygon(selectedNation.coords, selectedNation.rangeKm)
   const cityMapLabel = selectedCity ? `${selectedCity.name}, ${selectedCity.country}` : 'No city selected'
+  const offensiveCountriesInRange = new Set(
+    offensiveReachability.map((item) => normalizeCountryLookup(item.capital.country)),
+  )
 
   const handleSearchSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -478,7 +546,7 @@ function App() {
 
                 <label className="field-label" htmlFor="defensive-country">Target country</label>
                 <select id="defensive-country" value={defensiveTargetId} onChange={(event) => setDefensiveTargetId(event.target.value)}>
-                  {MAJOR_CAPITALS.map((capital) => (
+                  {alphabetizedCapitals.map((capital) => (
                     <option key={capital.id} value={capital.id}>
                       {capital.country} ({capital.capital})
                     </option>
@@ -581,6 +649,30 @@ function App() {
                 url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
               />
 
+              {activeView === 'offensive' && (
+                <GeoJSON
+                  key={`country-fill-${selectedNation.id}`}
+                  data={countryShapes as GeoJsonObject}
+                  interactive={false}
+                  style={(feature: Feature | undefined) => {
+                    const featureCountry = feature?.properties?.name
+                    const isHighlighted =
+                      typeof featureCountry === 'string' &&
+                      offensiveCountriesInRange.has(normalizeCountryLookup(featureCountry))
+
+                    return {
+                      color: isHighlighted ? selectedNation.color : '#cbd5e1',
+                      weight: isHighlighted ? 1.2 : 0.45,
+                      opacity: isHighlighted ? 0.7 : 0.28,
+                      fillColor: isHighlighted ? selectedNation.color : '#ffffff',
+                      fillOpacity: isHighlighted ? 0.16 : 0.02,
+                    }
+                  }}
+                />
+              )}
+
+             
+
               <ViewportController
                 view={activeView}
                 city={selectedCity}
@@ -634,13 +726,6 @@ function App() {
                     pathOptions={{ color: item.nation.color, weight: 2.5, opacity: 0.75, dashArray: '8 10' }}
                   />
                 ))}
-
-              {activeView === 'offensive' && (
-                <Polygon
-                  positions={offensivePolygon.map((point) => [point.lat, point.lon])}
-                  pathOptions={{ color: selectedNation.color, weight: 2.5, fillColor: selectedNation.color, fillOpacity: 0.14 }}
-                />
-              )}
 
               {activeView === 'defensive' &&
                 defensiveReachability.map((item) => (
