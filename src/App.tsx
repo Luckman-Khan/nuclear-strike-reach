@@ -671,7 +671,6 @@ function App() {
                 />
               )}
 
-             
 
               <ViewportController
                 view={activeView}
