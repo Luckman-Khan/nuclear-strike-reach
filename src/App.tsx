@@ -4,7 +4,6 @@ import {
   CircleMarker,
   GeoJSON,
   MapContainer,
-  Polygon,
   Polyline,
   Popup,
   TileLayer,
@@ -46,19 +45,6 @@ const alphabetizedCapitals = [...MAJOR_CAPITALS].sort((left, right) =>
   left.country.localeCompare(right.country) || left.capital.localeCompare(right.capital),
 )
 const countryShapes = worldGeoJson as FeatureCollection<Geometry>
-const jammuAndKashmirOverlay: [number, number][] = [
-  [34.9, 73.6],
-  [35.6, 74.9],
-  [35.9, 76.0],
-  [35.8, 77.4],
-  [34.8, 78.5],
-  [33.7, 78.1],
-  [33.0, 77.0],
-  [33.2, 75.7],
-  [34.1, 74.4],
-  [34.9, 73.6],
-]
-
 const normalizeCountryName = (country: string) =>
   country
     .normalize('NFKD')
